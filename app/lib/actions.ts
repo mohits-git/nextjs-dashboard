@@ -3,6 +3,9 @@ import { sql } from "@vercel/postgres";
 import { z } from "zod";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { signIn } from "@/auth";
+import { AuthError } from "next-auth";
+import { defaultHead } from "next/head";
 
 const FormSchema = z.object({
     id: z.string(),
@@ -27,6 +30,22 @@ export type State = {
 
 const CreateInvoice = FormSchema.omit({ id: true, date: true });
 const UpdateInvoice = FormSchema.omit({ id: true, date: true });
+
+export async function authenticate(prevState: string | undefined, formData: FormData) {
+    try{
+        await signIn('credentials', formData);
+    } catch(error) {
+        if(error instanceof AuthError){
+            switch(error.type){
+                case 'CredentialsSignin':
+                    return 'Invalid Credentials';
+                default: 
+                    return 'Something went wrong';
+            }
+        }
+        throw error;
+    }
+}
 
 export async function createInvoice(prevState: State, formData: FormData) {
     const rawFormData = Object.fromEntries(formData.entries());
@@ -58,12 +77,19 @@ export async function createInvoice(prevState: State, formData: FormData) {
     redirect('/dashboard/invoices');
 }
 
-export async function updateInvoice(id: string, formData: FormData) {
+export async function updateInvoice(id: string, prevState: State, formData: FormData) {
     const rawFormData = Object.fromEntries(formData.entries());
 
-    const { customerId, amount, status } = UpdateInvoice.parse(rawFormData);
-    const amountInCents = amount * 100;
+    const validateData = UpdateInvoice.safeParse(rawFormData);
+    if(!validateData.success){
+        return {
+            errors: validateData.error.flatten().fieldErrors,
+            message: 'Missing Fields. Please enter required fields.'
+        }
+    }
 
+    const { customerId, amount, status } = validateData.data;
+    const amountInCents = amount * 100;
     try {
         await sql`
         UPDATE invoices
@@ -81,8 +107,6 @@ export async function updateInvoice(id: string, formData: FormData) {
 }
 
 export async function deleteInvoice(id: string) {
-    throw new Error("Failed to Delete the Invoice");
-
     try {
         await sql`DELETE FROM invoices WHERE id = ${id}`;
         revalidatePath('/dashboard/invoices');
